@@ -23,6 +23,11 @@ bool Value::IsUint32() const
     return localToJSValue().isUInt32AsAnyInt();
 }
 
+bool Value::IsInt32() const
+{
+    return localToJSValue().isInt32AsAnyInt();
+}
+
 bool Value::IsUndefined() const
 {
     return localToJSValue().isUndefined();
