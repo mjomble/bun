@@ -144,19 +144,6 @@ optionx(CLEAN BOOL "Set when --clean is used" DEFAULT OFF)
 
 # --- Helper functions ---
 
-function(parse_semver value variable)
-  string(REGEX MATCH "([0-9]+)\\.([0-9]+)\\.([0-9]+)" match "${value}")
-  
-  if(NOT match)
-    message(FATAL_ERROR "Invalid semver: \"${value}\"")
-  endif()
-  
-  set(${variable}_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}" PARENT_SCOPE)
-  set(${variable}_VERSION_MAJOR "${CMAKE_MATCH_1}" PARENT_SCOPE)
-  set(${variable}_VERSION_MINOR "${CMAKE_MATCH_2}" PARENT_SCOPE)
-  set(${variable}_VERSION_PATCH "${CMAKE_MATCH_3}" PARENT_SCOPE)
-endfunction()
-
 # setenv()
 # Description:
 #   Sets an environment variable during the build step, and writes it to a .env file.
@@ -872,22 +859,335 @@ function(register_linker_flags)
   add_link_options(${LINKER_FLAGS})
 endfunction()
 
-function(print_compiler_flags)
-  get_property(targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
-  set(languages C CXX)
-  foreach(target ${targets})
-    get_target_property(type ${target} TYPE)
-    message(STATUS "Target: ${target}")
-    foreach(lang ${languages})
-      if(${target}_CMAKE_${lang}_FLAGS)
-        message(STATUS "  ${lang} Flags: ${${target}_CMAKE_${lang}_FLAGS}")
-      endif()
-    endforeach()
-  endforeach()
-  foreach(lang ${languages})
-    message(STATUS "Language: ${lang}")
-    if(CMAKE_${lang}_FLAGS)
-      message(STATUS "  Flags: ${CMAKE_${lang}_FLAGS}")
+# create_toolchain_file()
+# Description:
+#   Creates a CMake toolchain file.
+# Arguments:
+#   filename string - The path to create the toolchain file
+#   target   string - The target to create the toolchain file
+function(create_toolchain_file filename target)
+  parse_path(filename)
+  parse_target(target)
+
+  set(lines)
+
+  if(CMAKE_TOOLCHAIN_FILE)
+    file(STRINGS ${CMAKE_TOOLCHAIN_FILE} lines)
+    list(PREPEND lines "# Copied from ${CMAKE_TOOLCHAIN_FILE}")
+  endif()
+
+  list(APPEND lines "# Generated from ${CMAKE_CURRENT_FUNCTION} in ${CMAKE_CURRENT_LIST_FILE}")
+
+  set(variables
+    CMAKE_BUILD_TYPE
+    CMAKE_EXPORT_COMPILE_COMMANDS
+    CMAKE_COLOR_DIAGNOSTICS
+    CMAKE_C_COMPILER
+    CMAKE_C_COMPILER_LAUNCHER
+    CMAKE_CXX_COMPILER
+    CMAKE_CXX_COMPILER_LAUNCHER
+    CMAKE_LINKER
+    CMAKE_AR
+    CMAKE_RANLIB
+    CMAKE_STRIP
+    CMAKE_OSX_SYSROOT
+    CMAKE_OSX_DEPLOYMENT_TARGET
+  )
+
+  macro(append variable value)
+    if(value MATCHES " ")
+      list(APPEND lines "set(${variable} \"${value}\")")
+    else()
+      list(APPEND lines "set(${variable} ${value})")
+    endif()
+  endmacro()
+
+  foreach(variable ${variables})
+    if(DEFINED ${variable})
+      append(${variable} ${${variable}})
     endif()
   endforeach()
+
+  set(flags
+    CMAKE_C_FLAGS
+    CMAKE_CXX_FLAGS
+    CMAKE_LINKER_FLAGS
+  )
+
+  foreach(flag ${flags})
+    set(value)
+    if(DEFINED ${flag})
+      set(value "${${flag}}")
+    endif()
+    if(DEFINED ${target}_${flag})
+      set(value "${value} ${${target}_${flag}}")
+    endif()
+    if(value)
+      append(${flag} ${value})
+    endif()
+  endforeach()
+
+  set(definitions
+    CMAKE_DEFINITIONS
+    ${target}_CMAKE_DEFINITIONS
+  )
+
+  foreach(definition ${definitions})
+    foreach(entry ${${definition}})
+      string(REGEX MATCH "^([^=]+)=(.*)$" match ${entry})
+      if(NOT match)
+        message(FATAL_ERROR "Invalid definition: ${entry}")
+      endif()
+      append(${CMAKE_MATCH_1} ${CMAKE_MATCH_2})
+    endforeach()
+  endforeach()
+
+  list(JOIN lines "\n" lines)
+  file(GENERATE OUTPUT ${filename} CONTENT "${lines}\n")
+endfunction()
+
+# --- Parsing functions ---
+
+function(parse_semver value variable)
+  string(REGEX MATCH "([0-9]+)\\.([0-9]+)\\.([0-9]+)" match "${value}")
+  if(NOT match)
+    message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}: Invalid semver: \"${value}\"")
+  endif()
+  set(${variable}_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}" PARENT_SCOPE)
+  set(${variable}_VERSION_MAJOR "${CMAKE_MATCH_1}" PARENT_SCOPE)
+  set(${variable}_VERSION_MINOR "${CMAKE_MATCH_2}" PARENT_SCOPE)
+  set(${variable}_VERSION_PATCH "${CMAKE_MATCH_3}" PARENT_SCOPE)
+endfunction()
+
+function(parse_language variable)
+  if(NOT ${variable})
+    set(${variable} C CXX PARENT_SCOPE)
+  endif()
+  foreach(value ${${variable}})
+    if(NOT value MATCHES "^(C|CXX)$")
+      message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}: Invalid language: \"${value}\"")
+    endif()
+  endforeach()
+endfunction()
+
+function(parse_target variable)
+  foreach(value ${${variable}})
+    if(NOT TARGET ${value})
+      message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}: Invalid target: \"${value}\"")
+    endif()
+  endforeach()
+endfunction()
+
+function(parse_path variable)
+  foreach(value ${${variable}})
+    if(NOT IS_ABSOLUTE ${value})
+      message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}: ${variable} is not an absolute path: \"${value}\"")
+    endif()
+    if(NOT ${value} MATCHES "^(${CWD}|${BUILD_PATH}|${CACHE_PATH}|${VENDOR_PATH})")
+      message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}: ${variable} is not in the source, build, cache, or vendor path: \"${value}\"")
+    endif()
+  endforeach()
+endfunction()
+
+function(parse_list variable output)
+  set(items)
+  macro(check_expression)
+    if(DEFINED expression)
+      if(NOT (${expression}))
+        list(POP_BACK items)
+      endif()
+      unset(expression)
+    endif()
+  endmacro()
+  foreach(item ${${variable}})
+    if(item MATCHES "^(ON|OFF|AND|OR|NOT)$")
+      set(expression ${expression} ${item})
+    else()
+      check_expression()
+      list(APPEND items ${item})
+    endif()
+  endforeach()
+  check_expression()
+  set(${output} ${items} PARENT_SCOPE)
+endfunction()
+
+# --- New functions ---
+
+# register_vendor_target()
+# Description:
+#   Registers a target that builds a vendor dependency.
+# Arguments:
+#   target string - The name of the target
+function(register_vendor_target target)
+  add_custom_target(${target})
+
+  set(${target} ${target} PARENT_SCOPE)
+  set(${target}_PATH ${VENDOR_PATH}/${target} PARENT_SCOPE)
+  set(${target}_BUILD_PATH ${BUILD_PATH}/vendor/${target} PARENT_SCOPE)
+  
+  if(NOT TARGET vendor)
+    add_custom_target(vendor)
+  endif()
+  add_dependencies(vendor ${target})
+endfunction()
+
+# register_cmake_project()
+# Description:
+#   Registers an external CMake project.
+# Arguments:
+#   TARGET       string   - The target to associate the project
+#   CWD          string   - The working directory of the project
+#   CMAKE_TARGET string[] - The CMake targets to build
+#   CMAKE_PATH   string   - The path to the CMake project (default: CWD)
+function(register_cmake_project)
+  set(args TARGET CWD CMAKE_PATH LIBRARY_PATH)
+  set(multiArgs CMAKE_TARGET)
+  cmake_parse_arguments(PROJECT "" "${args}" "${multiArgs}" ${ARGN})
+
+  parse_target(PROJECT_TARGET)
+  
+  if(NOT PROJECT_CWD)
+    set(PROJECT_CWD ${${PROJECT_TARGET}_PATH})
+  endif()
+  parse_path(PROJECT_CWD)
+
+  if(PROJECT_CMAKE_PATH)
+    set(PROJECT_CMAKE_PATH ${PROJECT_CWD}/${PROJECT_CMAKE_PATH})
+  else()
+    set(PROJECT_CMAKE_PATH ${PROJECT_CWD})
+  endif()
+  parse_path(PROJECT_CMAKE_PATH)
+
+  set(PROJECT_BUILD_PATH ${${PROJECT_TARGET}_BUILD_PATH})
+  set(PROJECT_TOOLCHAIN_PATH ${PROJECT_BUILD_PATH}/CMakeLists-toolchain.txt)
+
+  register_command(
+    TARGET
+      configure-${PROJECT_TARGET}
+    COMMENT
+      "Configuring ${PROJECT_TARGET}"
+    COMMAND
+      ${CMAKE_COMMAND}
+        -G ${CMAKE_GENERATOR}
+        -B ${PROJECT_BUILD_PATH}
+        -S ${PROJECT_CMAKE_PATH}
+        --toolchain ${PROJECT_TOOLCHAIN_PATH}
+        --fresh
+        -DCMAKE_POLICY_DEFAULT_CMP0077=NEW
+    CWD
+      ${PROJECT_CWD}
+    SOURCES
+      ${PROJECT_TOOLCHAIN_PATH}
+    OUTPUTS
+      ${PROJECT_BUILD_PATH}/CMakeCache.txt
+  )
+
+  if(TARGET clone-${PROJECT_TARGET})
+    add_dependencies(configure-${PROJECT_TARGET} clone-${PROJECT_TARGET})
+  endif()
+
+  set(PROJECT_BUILD_ARGS --build ${PROJECT_BUILD_PATH})
+
+  parse_list(PROJECT_CMAKE_TARGET PROJECT_CMAKE_TARGET)
+  foreach(target ${PROJECT_CMAKE_TARGET})
+    list(APPEND PROJECT_BUILD_ARGS --target ${target})
+  endforeach()
+
+  get_libraries(${PROJECT_TARGET} PROJECT_OUTPUTS)
+
+  register_command(
+    TARGET
+      build-${PROJECT_TARGET}
+    COMMENT
+      "Building ${PROJECT_TARGET}"
+    COMMAND
+      ${CMAKE_COMMAND}
+        ${PROJECT_BUILD_ARGS}
+    CWD
+      ${PROJECT_CWD}
+    TARGETS
+      configure-${PROJECT_TARGET}
+    ARTIFACTS
+      ${PROJECT_OUTPUTS}
+  )
+
+  add_dependencies(${PROJECT_TARGET} build-${PROJECT_TARGET})
+  
+  cmake_language(EVAL CODE "cmake_language(DEFER CALL create_toolchain_file ${PROJECT_TOOLCHAIN_PATH} ${PROJECT_TARGET})")
+endfunction()
+
+# register_cmake_definitions()
+# Description:
+#   Registers definitions, when compiling an external CMake project.
+# Arguments:
+#   TARGET string        - The target to register the definitions (if not defined, sets for all targets)
+#   DESCRIPTION string   - The description of the definitions
+#   definitions string[] - The definitions to register
+function(register_cmake_definitions)
+  set(args TARGET DESCRIPTION)
+  cmake_parse_arguments(CMAKE "" "${args}" "" ${ARGN})
+
+  parse_target(CMAKE_TARGET)
+  parse_list(CMAKE_UNPARSED_ARGUMENTS CMAKE_EXTRA_DEFINITIONS)
+
+  foreach(definition ${CMAKE_EXTRA_DEFINITIONS})
+    string(REGEX MATCH "^([^=]+)=(.*)$" match ${definition})
+    if(NOT match)
+      message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}: Invalid definition: \"${definition}\"")
+    endif()
+  endforeach()
+
+  if(CMAKE_TARGET)
+    set(${CMAKE_TARGET}_CMAKE_DEFINITIONS ${${CMAKE_TARGET}_CMAKE_DEFINITIONS} ${CMAKE_EXTRA_DEFINITIONS} PARENT_SCOPE)
+  else()
+    set(CMAKE_DEFINITIONS ${CMAKE_DEFINITIONS} ${CMAKE_EXTRA_DEFINITIONS} PARENT_SCOPE)
+  endif()
+endfunction()
+
+# register_libraries()
+# Description:
+#   Registers libraries that are built from a target.
+# Arguments:
+#   TARGET    string   - The target that builds the libraries
+#   PATH      string   - The relative path to the libraries
+#   VARIABLE  string   - The variable to set to the libraries
+#   libraries string[] - The libraries to register
+function(register_libraries)
+  set(args TARGET PATH VARIABLE)
+  cmake_parse_arguments(LIBRARY "" "${args}" "" ${ARGN})
+
+  parse_target(LIBRARY_TARGET)
+  parse_list(LIBRARY_UNPARSED_ARGUMENTS LIBRARY_NAMES)
+
+  if(LIBRARY_PATH)
+    if(NOT IS_ABSOLUTE ${LIBRARY_PATH})
+      set(LIBRARY_PATH ${${LIBRARY_TARGET}_BUILD_PATH}/${LIBRARY_PATH})
+    endif()
+  else()
+    set(LIBRARY_PATH ${${LIBRARY_TARGET}_BUILD_PATH})
+  endif()
+  parse_path(LIBRARY_PATH)
+
+  set(LIBRARY_PATHS)
+  foreach(name ${LIBRARY_NAMES})
+    if(name MATCHES "\\.")
+      list(APPEND LIBRARY_PATHS ${LIBRARY_PATH}/${name})
+    else()
+      list(APPEND LIBRARY_PATHS ${LIBRARY_PATH}/${CMAKE_STATIC_LIBRARY_PREFIX}${name}${CMAKE_STATIC_LIBRARY_SUFFIX})
+    endif()
+  endforeach()
+
+  set_property(TARGET ${LIBRARY_TARGET} PROPERTY OUTPUT ${LIBRARY_PATHS} APPEND)
+
+  if(LIBRARY_VARIABLE)
+    set(${LIBRARY_VARIABLE} ${LIBRARY_PATHS} PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(get_libraries target variable)
+  get_target_property(libraries ${target} OUTPUT)
+  if(libraries MATCHES "NOTFOUND")
+    set(libraries)
+  endif()
+  set(${variable} ${libraries} PARENT_SCOPE)
 endfunction()
