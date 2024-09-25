@@ -766,99 +766,6 @@ function(register_cmake_command)
   endif()
 endfunction()
 
-# register_compiler_flag()
-# Description:
-#   Registers a compiler flag, similar to `add_compile_options()`, but has more validation and features.
-# Arguments:
-#   flags string[]     - The flags to register
-#   DESCRIPTION string - The description of the flag
-#   LANGUAGES string[] - The languages to register the flag (default: C, CXX)
-#   TARGETS string[]   - The targets to register the flag (default: all)
-function(register_compiler_flags)
-  set(args DESCRIPTION)
-  set(multiArgs LANGUAGES TARGETS)
-  cmake_parse_arguments(COMPILER "" "${args}" "${multiArgs}" ${ARGN})
-
-  if(NOT COMPILER_LANGUAGES)
-    set(COMPILER_LANGUAGES C CXX)
-  endif()
-
-  set(COMPILER_FLAGS)
-  foreach(flag ${COMPILER_UNPARSED_ARGUMENTS})
-    if(flag STREQUAL "ON")
-      continue()
-    elseif(flag STREQUAL "OFF")
-      list(POP_BACK COMPILER_FLAGS)
-    elseif(flag MATCHES "^(-|/)")
-      list(APPEND COMPILER_FLAGS ${flag})
-    else()
-      message(FATAL_ERROR "register_compiler_flags: Invalid flag: \"${flag}\"")
-    endif()
-  endforeach()
-
-  foreach(target ${COMPILER_TARGETS})
-    if(NOT TARGET ${target})
-      message(FATAL_ERROR "register_compiler_flags: \"${target}\" is not a target")
-    endif()
-  endforeach()
-
-  foreach(lang ${COMPILER_LANGUAGES})
-    list(JOIN COMPILER_FLAGS " " COMPILER_FLAGS_STRING)
-
-    if(NOT COMPILER_TARGETS)
-      set(CMAKE_${lang}_FLAGS "${CMAKE_${lang}_FLAGS} ${COMPILER_FLAGS_STRING}" PARENT_SCOPE)
-    endif()
-
-    foreach(target ${COMPILER_TARGETS})
-      set(${target}_CMAKE_${lang}_FLAGS "${${target}_CMAKE_${lang}_FLAGS} ${COMPILER_FLAGS_STRING}" PARENT_SCOPE)
-    endforeach()
-  endforeach()
-
-  foreach(lang ${COMPILER_LANGUAGES})
-    foreach(flag ${COMPILER_FLAGS})
-      if(NOT COMPILER_TARGETS)
-        add_compile_options($<$<COMPILE_LANGUAGE:${lang}>:${flag}>)
-      endif()
-      
-      foreach(target ${COMPILER_TARGETS})
-        get_target_property(type ${target} TYPE)
-        if(type MATCHES "EXECUTABLE|LIBRARY")
-          target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:${lang}>:${flag}>)
-        endif()
-      endforeach()
-    endforeach()
-  endforeach()
-endfunction()
-
-function(register_compiler_definitions)
-  
-endfunction()
-
-# register_linker_flags()
-# Description:
-#   Registers a linker flag, similar to `add_link_options()`.
-# Arguments:
-#   flags string[]     - The flags to register
-#   DESCRIPTION string - The description of the flag
-function(register_linker_flags)
-  set(args DESCRIPTION)
-  cmake_parse_arguments(LINKER "" "${args}" "" ${ARGN})
-
-  foreach(flag ${LINKER_UNPARSED_ARGUMENTS})
-    if(flag STREQUAL "ON")
-      continue()
-    elseif(flag STREQUAL "OFF")
-      list(POP_FRONT LINKER_FLAGS)
-    elseif(flag MATCHES "^(-|/)")
-      list(APPEND LINKER_FLAGS ${flag})
-    else()
-      message(FATAL_ERROR "register_linker_flags: Invalid flag: \"${flag}\"")
-    endif()
-  endforeach()
-
-  add_link_options(${LINKER_FLAGS})
-endfunction()
-
 # create_toolchain_file()
 # Description:
 #   Creates a CMake toolchain file.
@@ -1144,6 +1051,174 @@ function(register_cmake_definitions)
   endif()
 endfunction()
 
+# register_compiler_flags()
+# Description:
+#   Registers a compiler flag, similar to `add_compile_options()`, but has more validation and features.
+# Arguments:
+#   TARGET string      - The target to register the flag (default: all)
+#   LANGUAGE string    - The language to register the flag (default: C, CXX)
+#   DESCRIPTION string - The description of the flag
+#   flags string[]     - The flags to register
+function(register_compiler_flags)
+  set(args TARGET LANGUAGE DESCRIPTION)
+  cmake_parse_arguments(COMPILER "" "${args}" "" ${ARGN})
+
+  parse_target(COMPILER_TARGET)
+  parse_language(COMPILER_LANGUAGE)
+  parse_list(COMPILER_UNPARSED_ARGUMENTS COMPILER_FLAGS)
+
+  foreach(flag ${COMPILER_FLAGS})
+    if(NOT flag MATCHES "^(-|/)")
+      message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}: Invalid flag: \"${flag}\"")
+    endif()
+  endforeach()
+
+  foreach(language ${COMPILER_LANGUAGE})
+    list(JOIN COMPILER_FLAGS " " COMPILER_FLAGS_STRING)
+    if(NOT COMPILER_TARGET)
+      set(CMAKE_${language}_FLAGS "${CMAKE_${language}_FLAGS} ${COMPILER_FLAGS_STRING}" PARENT_SCOPE)
+    endif()
+    foreach(target ${COMPILER_TARGET})
+      set(${target}_CMAKE_${language}_FLAGS "${${target}_CMAKE_${language}_FLAGS} ${COMPILER_FLAGS_STRING}" PARENT_SCOPE)
+    endforeach()
+  endforeach()
+
+  foreach(language ${COMPILER_LANGUAGE})
+    foreach(flag ${COMPILER_FLAGS})
+      if(NOT COMPILER_TARGET)
+        add_compile_options($<$<COMPILE_LANGUAGE:${language}>:${flag}>)
+      endif()
+      foreach(target ${COMPILER_TARGET})
+        get_target_property(type ${target} TYPE)
+        get_target_property(imported ${target} IMPORTED)
+        if(type MATCHES "EXECUTABLE|LIBRARY" AND NOT imported)
+          target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:${language}>:${flag}>)
+        endif()
+      endforeach()
+    endforeach()
+  endforeach()
+endfunction()
+
+# register_compiler_definitions()
+# Description:
+#   Registers a compiler definition, similar to `add_compile_definitions()`.
+# Arguments:
+#   TARGET string        - The target to register the definitions (default: all)
+#   LANGUAGE string      - The language to register the definitions (default: C, CXX)
+#   DESCRIPTION string   - The description of the definitions
+#   definitions string[] - The definitions to register
+function(register_compiler_definitions)
+  set(args TARGET LANGUAGE DESCRIPTION)
+  cmake_parse_arguments(COMPILER "" "${args}" "" ${ARGN})
+
+  parse_language(COMPILER_LANGUAGE)
+  parse_target(COMPILER_TARGET)
+  parse_list(COMPILER_UNPARSED_ARGUMENTS COMPILER_DEFINITIONS)
+
+  foreach(definition ${COMPILER_DEFINITIONS})
+    if(NOT definition MATCHES "^([A-Z_][A-Z0-9_]*)")
+      message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}: Invalid definition: \"${definition}\"")
+    endif()
+  endforeach()
+
+  if(WIN32)
+    list(TRANSFORM COMPILER_DEFINITIONS PREPEND "/D" OUTPUT_VARIABLE COMPILER_FLAGS)
+  else()
+    list(TRANSFORM COMPILER_DEFINITIONS PREPEND "-D" OUTPUT_VARIABLE COMPILER_FLAGS)
+  endif()
+
+  foreach(language ${COMPILER_LANGUAGE})
+    list(JOIN COMPILER_FLAGS " " COMPILER_FLAGS_STRING)
+    if(NOT COMPILER_TARGET)
+      set(CMAKE_${language}_FLAGS "${CMAKE_${language}_FLAGS} ${COMPILER_FLAGS_STRING}" PARENT_SCOPE)
+    endif()
+    foreach(target ${COMPILER_TARGET})
+      set(${target}_CMAKE_${language}_FLAGS "${${target}_CMAKE_${language}_FLAGS} ${COMPILER_FLAGS_STRING}" PARENT_SCOPE)
+    endforeach()
+  endforeach()
+
+  foreach(definition ${COMPILER_DEFINITIONS})
+    foreach(language ${COMPILER_LANGUAGE})
+      if(NOT COMPILER_TARGET)
+        add_compile_definitions($<$<COMPILE_LANGUAGE:${language}>:${definition}>)
+      endif()
+      foreach(target ${COMPILER_TARGET})
+        get_target_property(type ${target} TYPE)
+        get_target_property(imported ${target} IMPORTED)
+        if(type MATCHES "EXECUTABLE|LIBRARY" AND NOT imported)
+          target_compile_definitions(${target} PRIVATE $<$<COMPILE_LANGUAGE:${language}>:${definition}>)
+        endif()
+      endforeach()
+    endforeach()
+  endforeach()
+endfunction()
+
+# register_linker_flags()
+# Description:
+#   Registers a linker flag, similar to `add_link_options()`.
+# Arguments:
+#   flags string[]     - The flags to register
+#   DESCRIPTION string - The description of the flag
+function(register_linker_flags)
+  set(args DESCRIPTION)
+  cmake_parse_arguments(LINKER "" "${args}" "" ${ARGN})
+
+  foreach(flag ${LINKER_UNPARSED_ARGUMENTS})
+    if(flag STREQUAL "ON")
+      continue()
+    elseif(flag STREQUAL "OFF")
+      list(POP_FRONT LINKER_FLAGS)
+    elseif(flag MATCHES "^(-|/)")
+      list(APPEND LINKER_FLAGS ${flag})
+    else()
+      message(FATAL_ERROR "register_linker_flags: Invalid flag: \"${flag}\"")
+    endif()
+  endforeach()
+
+  add_link_options(${LINKER_FLAGS})
+endfunction()
+
+# register_includes()
+# Description:
+#   Registers a include directory, similar to `target_include_directories()`.
+# Arguments:
+#   TARGET string      - The target to register the include (default: all)
+#   LANGUAGE string    - The language to register the include (default: C, CXX)
+#   DESCRIPTION string - The description of the include
+#   paths string[]     - The include paths to register
+function(register_includes)
+  set(args TARGET LANGUAGE DESCRIPTION)
+  cmake_parse_arguments(INCLUDE "" "${args}" "" ${ARGN})
+
+  parse_target(INCLUDE_TARGET)
+  parse_language(INCLUDE_LANGUAGE)
+  parse_list(INCLUDE_UNPARSED_ARGUMENTS INCLUDE_PATHS)
+  parse_path(INCLUDE_PATHS)
+
+  list(TRANSFORM INCLUDE_PATHS PREPEND "-I" OUTPUT_VARIABLE INCLUDE_FLAGS)
+  list(JOIN INCLUDE_FLAGS " " INCLUDE_FLAGS_STRING)
+
+  foreach(language ${INCLUDE_LANGUAGE})
+    if(NOT INCLUDE_TARGET)
+      set(CMAKE_${language}_FLAGS "${CMAKE_${language}_FLAGS} ${INCLUDE_FLAGS_STRING}" PARENT_SCOPE)
+    endif()
+    foreach(target ${INCLUDE_TARGET})
+      set(${target}_CMAKE_${language}_FLAGS "${${target}_CMAKE_${language}_FLAGS} ${INCLUDE_FLAGS_STRING}" PARENT_SCOPE)
+    endforeach()
+
+    if(NOT INCLUDE_TARGET)
+      add_include_directories(${INCLUDE_PATHS})
+    endif()
+    foreach(target ${INCLUDE_TARGET})
+      get_target_property(type ${target} TYPE)
+      get_target_property(imported ${target} IMPORTED)
+      if(type MATCHES "EXECUTABLE|LIBRARY" AND NOT imported)
+        target_include_directories(${target} PUBLIC ${INCLUDE_PATHS})
+      endif()
+    endforeach()
+  endforeach()
+endfunction()
+
 # register_libraries()
 # Description:
 #   Registers libraries that are built from a target.
@@ -1182,6 +1257,8 @@ function(register_libraries)
   if(LIBRARY_VARIABLE)
     set(${LIBRARY_VARIABLE} ${LIBRARY_PATHS} PARENT_SCOPE)
   endif()
+
+  target_link_libraries(${bun} PRIVATE ${LIBRARY_PATHS})
 endfunction()
 
 function(get_libraries target variable)

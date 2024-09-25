@@ -10,7 +10,8 @@ register_repository(
 )
 
 register_libraries(
-  TARGET ${brotli}
+  TARGET
+    ${brotli}
   brotlicommon
   brotlidec
   brotlienc
@@ -26,7 +27,8 @@ register_cmake_project(
 )
 
 register_cmake_definitions(
-  TARGET ${brotli}
+  TARGET
+    ${brotli}
   BUILD_SHARED_LIBS=OFF
   BROTLI_BUILD_TOOLS=OFF
   BROTLI_EMSCRIPTEN=OFF
@@ -42,6 +44,10 @@ if(LINUX AND CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|AMD64|x86_64|X86_64|x64|X64" 
   )
 endif()
 
+register_includes(
+  TARGET ${bun}
+  ${${brotli}_PATH}/c/include
+)
 
 # register_repository(
 #   NAME

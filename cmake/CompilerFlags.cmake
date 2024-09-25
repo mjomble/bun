@@ -105,7 +105,7 @@ register_compiler_flags(
 
 register_compiler_flags(
   DESCRIPTION "Disable C++ static destructors"
-  LANGUAGES CXX
+  LANGUAGE CXX
   -Xclang ${WIN32}
   -fno-c++-static-destructors
 )
@@ -250,7 +250,7 @@ if(ENABLE_LTO)
   if(UNIX)
     register_compiler_flags(
       DESCRIPTION "Enable virtual tables"
-      LANGUAGES CXX
+      LANGUAGE CXX
       -fforce-emit-vtables
       -fwhole-program-vtables
     )
